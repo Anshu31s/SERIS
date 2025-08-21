@@ -1,0 +1,5 @@
+ollama
+openai-whisper
+piper-tts
+sounddevice
+webrtcvad

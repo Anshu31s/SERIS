@@ -1,108 +1,115 @@
-import os
-import re
-import pyaudio
-import whisper  # pip install openai-whisper
-import pyttsx3
-import tempfile
-import wave
-import ollama  # pip install ollama
+import sys
+import time
+import ollama
+from config import ASR_MODEL, OLLAMA_MODEL, SPEAK_STREAMING, PIPER_VOICE_MODEL
+from speech_to_text import load_whisper_model, listen_forever
+from text_to_speech import load_piper_voice, speak_text, SynthesisConfig
 
-
-# Record audio from microphone and save as WAV
-def record_audio(filename, duration=5, fs=16000):
-    audio = pyaudio.PyAudio()
-    stream = audio.open(format=pyaudio.paInt16,
-                        channels=1,
-                        rate=fs,
-                        input=True,
-                        frames_per_buffer=1024)
-
-    print("🎙️ Listening... Speak now.")
-    frames = []
-
-    for _ in range(0, int(fs / 1024 * duration)):
-        data = stream.read(1024)
-        frames.append(data)
-
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
-
-    wf = wave.open(filename, 'wb')
-    wf.setnchannels(1)
-    wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
-    wf.setframerate(fs)
-    wf.writeframes(b''.join(frames))
-    wf.close()
-
-
-# Transcribe audio using Whisper
-def transcribe_audio(filename):
-    model = whisper.load_model("base")  # "small", "medium", "large" for higher accuracy
-    print("🔍 Transcribing...")
-    result = model.transcribe(filename)
-    return result["text"]
-
-
-# Query Ollama using Python library
-def query_ollama(input_text):
-    full_response = ""
-
-    for chunk in ollama.chat(
-        model="qwen3:0.6b",
-        messages=[
-            {
-                "role": "system",
-                "content": """a highly intelligent, professional, and efficient AI assistant.
-You are speaking to your creator. Always respond clearly and concisely as if you were a real-time digital assistant.
-Do not use emojis or emoticons under any circumstances.
-Your tone should be calm, confident, and helpful — like a highly advanced AI assistant.
-Avoid unnecessary explanations unless the user asks for them.
-If the user's request is unclear, ask them to clarify.
-You are always ready to assist with any command or question."""
-            },
-            {"role": "user", "content": input_text}
-        ],
-        stream=True
-    ):
-        content = chunk["message"]["content"]
-        full_response += content
-        # print(content, end="", flush=True)
-
-    print()  # New line after streaming
-    # Remove any <think> blocks if present
-    return re.sub(r"<think>.*?</think>", "", full_response, flags=re.DOTALL).strip()
-
-
-# Convert Ollama's response to speech
-def speak_text(text):
-    engine = pyttsx3.init()
-    engine.say(text)
-    engine.runAndWait()
-
-
-# Main function
-def main():
+def warmup_ollama():
+    """Warm up the Ollama model."""
+    print("🔄 Warming up Ollama model...")
     try:
-        while True:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
-                record_audio(tmpfile.name, duration=5)  # Record 5 seconds
-                user_input = transcribe_audio(tmpfile.name)
-                print(f"\n📝 You said: {user_input}")
-
-                if user_input.strip() == "":
-                    continue
-
-                print("🤖 Ollama says: ", end="")
-                response = query_ollama(user_input)
-
-                speak_text(response)
-
-    except KeyboardInterrupt:
-        print("\nExiting. Goodbye!")
+        t0 = time.time()
+        ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful AI assistant. Respond in plain text without emojis or markdown."},
+                {"role": "user", "content": "Hello"}
+            ]
+        )
+        print(f"✅ Ollama warmed up in {time.time() - t0:.2f} seconds")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"❌ Ollama warm-up error: {e}")
 
+def _sentences_from_stream(chunks_iter):
+    """Yield sentences as they complete (ends with ., !, ?, or newline)."""
+    buffer = ""
+    enders = (".", "!", "?", "\n")
+    for chunk in chunks_iter:
+        content = chunk["message"]["content"]
+        buffer += content
+        print(content, end="", flush=True)
+        while True:
+            idxs = [buffer.find(e) for e in enders if buffer.find(e) != -1]
+            if not idxs:
+                break
+            cut = min(idxs) + 1
+            sent, buffer = buffer[:cut], buffer[cut:]
+            yield sent
+    if buffer.strip():
+        yield buffer
+
+def query_ollama(input_text: str, piper_voice, synthesis_config):
+    """Query Ollama and optionally stream TTS."""
+    try:
+        full = []
+        if SPEAK_STREAMING:
+            print("🤖 Ollama says: ", end="", flush=True)
+            stream = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI assistant. Respond in plain text without emojis or markdown."},
+                    {"role": "user", "content": input_text}
+                ],
+                stream=True
+            )
+            for sentence in _sentences_from_stream(stream):
+                full.append(sentence)
+                speak_text(sentence, piper_voice, synthesis_config)
+            print()
+            return "".join(full).strip()
+        else:
+            print("🤖 Ollama says: ", end="", flush=True)
+            for chunk in ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI assistant. Respond in plain text without emojis or markdown."},
+                    {"role": "user", "content": input_text}
+                ],
+                stream=True
+            ):
+                content = chunk["message"]["content"]
+                full.append(content)
+                print(content, end="", flush=True)
+            print()
+            response = "".join(full).strip()
+            if response:
+                speak_text(response, piper_voice, synthesis_config)
+            return response
+    except Exception as e:
+        print(f"\n❌ Ollama error: {e}")
+        return ""
+
+def main():
+    """Main application loop."""
+    # Initialize models
+    whisper_model = load_whisper_model(ASR_MODEL)
+    piper_voice, use_cuda = load_piper_voice(PIPER_VOICE_MODEL)
+    synthesis_config = SynthesisConfig(
+        volume=0.7,
+        length_scale=1.0,
+        noise_scale=1.0,
+        noise_w_scale=1.0,
+        normalize_audio=True
+    )
+    warmup_ollama()
+
+    # Define callback for speech detection
+    def on_speech_detected(text):
+        if text.lower() in {"stop", "exit", "quit"}:
+            print("👋 Goodbye!")
+            sys.exit(0)
+        response = query_ollama(text, piper_voice, synthesis_config)
+        if response and not SPEAK_STREAMING:
+            speak_text(response, piper_voice, synthesis_config)
+
+    # Start listening
+    try:
+        listen_forever(whisper_model, on_speech_detected)
+    except KeyboardInterrupt:
+        print("\n👋 Exiting. Goodbye!")
+    except Exception as e:
+        print(f"❌ Main error: {e}")
 
 if __name__ == "__main__":
     main()

@@ -29,7 +29,6 @@ It combines **speech recognition (Whisper)**, **local reasoning (Ollama)**, and 
 ---
 
 ## 🚀 Getting Started
-
 ### 1. Install Ollama
 
 Download and install Ollama from: [https://ollama.ai](https://ollama.ai)
@@ -37,31 +36,30 @@ Download and install Ollama from: [https://ollama.ai](https://ollama.ai)
 Verify it’s running:
 
 ```bash
-ollama run {model name}
+ollama run llama3
 ```
 
 ### 2. Clone the Repository
 
 ```bash
-git clone https://github.com/Anshu31s/SERIS
+git clone https://github.com/your-username/seris.git
 cd seris
 ```
 
-### 3. Install Dependencies
+### 3. Install PyTorch (GPU recommended)
+
+Make sure to install PyTorch with CUDA (for Whisper & Piper TTS):
+
+```bash
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu129
+```
+
+*(If you don’t have an NVIDIA GPU, install the CPU version from [PyTorch.org](https://pytorch.org/get-started/locally/)).*
+
+### 4. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
-```
-
-Example `requirements.txt`:
-
-```
-ollama
-openai-whisper
-piper-tts
-sounddevice
-webrtcvad
-numpy
 ```
 
 ### 4. Run SERIS
